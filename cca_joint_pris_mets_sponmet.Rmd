@@ -1,0 +1,427 @@
+---
+title: "Joining five samples - two primary and two metastatic PDXs plus spontaneous metastasis"
+author: "Yang"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: show
+    css: ../../../resources/custom.css
+    df_print: paged
+    number_sections: yes
+    theme: flatly
+    toc: yes
+---
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = TRUE,
+                      warning = FALSE,
+                      error = FALSE,
+                      cache = TRUE,
+                      cache.path = "cache/14/",
+                      fig.keep = "all",
+                      dev = c("png", "pdf"),
+                      fig.path = "figures/14/",
+                      cache.lazy = FALSE,
+                      fig.width = 10,
+                      fig.height = 7.5)
+
+options(knitr.table.format = "html") 
+knitr::opts_knit$set(width = 1200)
+knitr::opts_template$set(d = list(fig.height = 8, fig.width = 15.5))
+knitr::opts_template$set(v = list(fig.height = 8, fig.width = 11))
+```
+
+# README
+
+In this script, I will use RunMultiCCA to do the the joint of five samples.
+
+# Libraries
+
+```{r libs, message=FALSE, warning=FALSE, cache = FALSE}
+
+# data
+library(data.table)
+library(tidyverse)
+library(reshape2)
+library(glue)
+library(plyr)
+
+# format
+library(kableExtra)
+
+# seurat
+library(Seurat)
+
+# plotting
+library(ggplot2)
+library(RColorBrewer)
+library(viridis)
+library(patchwork)
+
+# Selin's functions and mine
+library(cytobox)
+source('../../../resources/functions_yy.R')
+source("functions.R")
+
+```
+
+# Data
+
+```{r data}
+
+#ct1915_1 <- readRDS("./objects/ct1915_1_updated1.rds")
+#ct1915_2 <- readRDS("../1-raw_data_processing/objects/1-ct1915_2_seurat_object_pc_50_resolution_0.6.rds")
+#ct2076_1 <- readRDS("../1-raw_data_processing/objects/2-ct2076_seurat_object_pc_50_resolution_0.6.rds")
+##ct2076_2 <- readRDS("../1-raw_data_processing/objects/6-ct2076_2_seurat_pc30_res0.6.rds")
+#ct2076_2_ds <- readRDS("./objects/03_ct2076_2_ds10k.rds")
+#spon_met <- readRDS("../1-raw_data_processing/objects/12-ct2076_3_seurat_pc30_res0.6_more_strin_thre.rds")
+
+samples <- fread("../../../resources/paths_to_seurat_objects_all_samples.txt") %>% 
+    column_to_rownames("sample")
+sample_names <- c("ct1915_1", "ct1915_2", "ct2076_1", "ct2076_2_ds", "spon_met")
+
+for(i in 1:length(sample_names)) { 
+    data_path <- samples[sample_names[i], "data_path"]
+    seurat <- readRDS(data_path)
+    seurat_name <- gsub("_small", "", sample_names[i])
+    assign(seurat_name, seurat)
+    rm(seurat)
+}
+
+```
+
+```{r table}
+
+raw_genes <- fread("../../../resources/raw_gene_table_for_gene_name_correction.txt")
+annotation <- fread("../../../resources/gene_annotation.txt")
+
+```
+
+# Configuration
+
+```{r cols}
+
+pri1_cols <- c("#005994", "#A65628", "#3CB371", "#DC143C", "#ff1493", "#aa83bb", "#ffc50b", "#4B0082")
+pri2_cols<- c("#005994", "#008000", "#7A429E", "#A65628", "#ffc50b", "#ff1493")
+met1_cols <- c("#008000", "#4d4e4e", "#7A429E", "#005994", "#ffc50b")
+met2_cols <- c("#005994", "#008000", "#7A429E", "#4d4e4e", "#00CED1", "#26968F", "#FF7E5F", "#A65628")
+sponmet_cols <- c("#0F52BA", "#E50028", "#7A429E", "#FFC50B")
+
+cca_joint_pris_cols <- c("#0F52BA", "#DC143C", "#3CB371", "#7A429E", "#FF1493", "#FFDE75", "#EE89FF", "#A65628", "#FFC50B")
+cca_joint_mets_cols <- c("#0F52BA", "#4D4E4E", "#E50028", "#7A429E", "#00BE67", "#FFC50B", "#26968F", "#A65628", "#E86140")
+
+sample_pal <- c("#66CCCC", "#3333FF", "#FF0033", "#FF9933", "#330066")
+
+# rename orig.ident
+ct1915_1@meta.data$orig.ident <- "ct1915_1"
+spon_met@meta.data$orig.ident <- "spon_met"
+
+```
+
+# Naively-join five samples
+
+## join the downsampled met2
+
+```{r naive_joint}
+
+naive_joint_pris_mets_sponmet <- merge_yy(ct1915_1, c(ct1915_2, ct2076_1, ct2076_2_ds, spon_met), add.cell.ids = c("pri1", "pri2", "met1", "met2", "sponmet"), project = "naive_joint_pris_mets_sponmet")
+
+naive_joint_pris_mets_sponmet <- naive_joint_pris_mets_sponmet %>% 
+  FindVariableGenes(x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5, do.plot = FALSE, display.progress = FALSE) %>% 
+  ScaleData(vars.to.regress = c("nUMI", "percent.mito")) 
+
+naive_joint_pris_mets_sponmet <- naive_joint_pris_mets_sponmet %>% 
+  RunPCA(pc.genes = .@var.genes, pcs.compute=100, do.print = FALSE) %>% 
+  RunTSNE(dims.use = 1:30, do.fast = TRUE) %>% 
+  RunUMAP(dims.use = 1:30) %>%
+  FindClusters(dims.use = 1:30, resolution = 0.6, print.output = FALSE, save.SNN = TRUE)
+
+naive_joint_pris_mets_sponmet@meta.data$orig.ident <- factor(naive_joint_pris_mets_sponmet@meta.data$orig.ident, levels = c("ct1915_1", "ct1915_2", "ct2076_1", "ct2076_2", "spon_met"))
+
+saveRDS(naive_joint_pris_mets_sponmet, file = "./objects/14/Naive_joint_patient1915_5pdxs_dsmet.rds")
+
+```
+
+### plotting
+
+```{r plots, fig.height=6, fig.width=13}
+
+sample_pal1 <- sample_pal; names(sample_pal1) <- levels(naive_joint_pris_mets_sponmet@meta.data$orig.ident)
+
+p1 <- DimPlot(object = naive_joint_pris_mets_sponmet, reduction.use = "umap", group.by = "orig.ident", cols.use = sample_pal1, do.return = TRUE, pt.size = 0.8) + guides(colour = guide_legend(override.aes = list(size = 4)))
+p2 <- DimPlot(object = naive_joint_pris_mets_sponmet, reduction.use = "umap", point_size = 0.8, do.return = TRUE) + guides(colour = guide_legend(override.aes = list(size = 4)))
+p1 + p2 & theme(legend.position = "bottom")
+
+```
+
+# Batch correction: CCA alignment
+
+## join the downsampled met2
+
+```{r cca_joint}
+
+obj_list <- list(ct1915_1, ct1915_2, ct2076_1, ct2076_2_ds, spon_met)
+genes.use <- c()
+for (i in 1:length(obj_list)) {
+  genes.use <- c(genes.use, head(rownames(obj_list[[i]]@hvg.info), 2000))
+}
+genes.use <- unique(genes.use) # union of the hvg.genes in five samples
+
+#genes.use <- names(which(table(genes.use) > 1)) # based on https://broadinstitute.github.io/2019_scWorkshop/correcting-batch-effects.html
+# to exclude any genes that have no expression in any of the samples. same function as below:
+for (i in 1:length(obj_list)) {
+  genes.use <- genes.use[genes.use %in% rownames(obj_list[[i]]@data)]
+}
+
+## Run multi-set CCA on the four datasets
+## Use the variable genes above, and calculate 60 canonical components.
+cca_joint_pris_mets_sponmet <- RunMultiCCA(obj_list, add.cell.ids = c("pri1", "pri2", "met1", "met2", "sponmet"), genes.use = genes.use, num.ccs = 60)
+cca_joint_pris_mets_sponmet@project.name <- "cca_joint_pris_mets_sponmet"
+
+```
+
+### Visualize CC plots
+
+```{r cc_plots}
+
+p1 <- DimPlot(cca_joint_pris_mets_sponmet, reduction.use = "cca", group.by = "orig.ident", pt.size = 0.6, do.return = T)
+p2 <- VlnPlot(cca_joint_pris_mets_sponmet, features.plot = c("CC1", "CC2"), group.by = "orig.ident", do.return = T)
+p1 + p2
+
+# look at the genes important in the first 9 canonical components
+DimHeatmap(cca_joint_pris_mets_sponmet, reduction.type = "cca", cells.use = 500, dim.use = 1:9, do.balanced = TRUE)
+
+```
+
+### Decide number of CCs
+
+```{r dec_ncc}
+
+# Read the documentation for MetageneBicorPlot and 
+# also read https://en.wikipedia.org/wiki/Biweight_midcorrelation
+# Use this function to determine how many canonical components to select.
+# Remember to use the appropriate grouping variable.
+MetageneBicorPlot(cca_joint_pris_mets_sponmet, grouping.var = "orig.ident", dims.eval = 1:60)
+
+```
+
+### CCA-alignment and dimensionality reduction
+
+```{r cca_dr, fig.height=6, fig.width=13}
+
+# cc30 seems to be a better selection
+cca_joint_pris_mets_sponmet <- AlignSubspace(cca_joint_pris_mets_sponmet, grouping.var = "orig.ident", dims.align = 1:30)
+
+p1 <- VlnPlot(cca_joint_pris_mets_sponmet, features.plot = "ACC1", group.by = "orig.ident", do.return = T)
+p2 <- VlnPlot(cca_joint_pris_mets_sponmet, features.plot = "ACC2", group.by = "orig.ident", do.return = T)
+p1 + p2
+
+cca_joint_pris_mets_sponmet <- cca_joint_pris_mets_sponmet %>% 
+  FindClusters(reduction.type = "cca.aligned", dims.use = 1:30, resolution = 0.8, save.SNN = T) %>% 
+  RunTSNE(reduction.use = "cca.aligned", dims.use = 1:30, do.fast = T) %>% 
+  RunUMAP(reduction.use = "cca.aligned", dims.use = 1:30)
+
+```
+
+```{r cc_scoring}
+
+#cc.genes <- readLines(con = "../../../resources/regev_lab_cell_cycle_genes.txt")
+#s.genes <- cc.genes[1:43]
+#g2m.genes <- cc.genes[44:97]
+
+# cc.genes is also loaded in Seurat package
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+cca_joint_pris_mets_sponmet <- CellCycleScoring(cca_joint_pris_mets_sponmet, g2m.genes = g2m.genes, s.genes = s.genes, set.ident = FALSE)
+
+```
+
+```{r data_manip}
+
+# Add the original cluster numbers of individual samples to metadata
+pri1_cells <- paste0("pri1_", ct1915_1@cell.names)
+pri2_cells <- paste0("pri2_", ct1915_2@cell.names)
+met1_cells <- paste0("met1_", ct2076_1@cell.names)
+met2_cells <- paste0("met2_", ct2076_2_ds@cell.names)
+sponmet_cells <- paste0("sponmet_", spon_met@cell.names)
+cca_joint_pris_mets_sponmet@meta.data$indiv.clu <- NA
+cca_joint_pris_mets_sponmet@meta.data$indiv.clu.anno <- NA
+## pri1
+to.add <- ct1915_1@ident %>% as.data.frame(); rownames(to.add) <- pri1_cells
+colnames(to.add) <- "cluster"; to.add$cluster <- as.character(to.add$cluster)
+to.add <- to.add %>% separate(cluster, into = c("cluster", "cluster_anno"), sep = "-")
+cca_joint_pris_mets_sponmet@meta.data[pri1_cells, c("indiv.clu", "indiv.clu.anno")] <- to.add[pri1_cells,]
+## pri2
+to.add <- ct1915_2@ident %>% as.data.frame(); rownames(to.add) <- pri2_cells
+colnames(to.add) <- "cluster"; to.add$cluster <- as.character(to.add$cluster)
+to.add <- to.add %>% separate(cluster, into = c("cluster", "cluster_anno"), sep = "-")
+cca_joint_pris_mets_sponmet@meta.data[pri2_cells, c("indiv.clu", "indiv.clu.anno")] <- to.add[pri2_cells,]
+# met1
+to.add <- ct2076_1@ident %>% as.data.frame(); rownames(to.add) <- met1_cells
+colnames(to.add) <- "cluster"; to.add$cluster <- as.character(to.add$cluster)
+to.add <- to.add %>% separate(cluster, into = c("cluster", "cluster_anno"), sep = "-")
+cca_joint_pris_mets_sponmet@meta.data[met1_cells, c("indiv.clu", "indiv.clu.anno")] <- to.add[met1_cells,]
+# met2
+to.add <- ct2076_2_ds@ident %>% as.data.frame(); rownames(to.add) <- met2_cells
+colnames(to.add) <- "cluster"; to.add$cluster <- as.character(to.add$cluster)
+to.add <- to.add %>% separate(cluster, into = c("cluster", "cluster_anno"), sep = "-")
+cca_joint_pris_mets_sponmet@meta.data[met2_cells, c("indiv.clu", "indiv.clu.anno")] <- to.add[met2_cells,]
+# spon-met
+to.add <- spon_met@ident %>% as.data.frame(); rownames(to.add) <- sponmet_cells
+colnames(to.add) <- "cluster"; to.add$cluster <- as.character(to.add$cluster)
+to.add <- to.add %>% separate(cluster, into = c("cluster", "cluster_anno"), sep = "-")
+cca_joint_pris_mets_sponmet@meta.data[sponmet_cells, c("indiv.clu", "indiv.clu.anno")] <- to.add[sponmet_cells,]
+
+rm(ct1915_1, ct1915_2, ct2076_1, ct2076_2_ds) # to release memory burden
+
+```
+
+Add two-replicate joint identified cluster identities.
+
+```{r data_mainip1}
+
+samples <- fread("../../resources/paths_to_seurat_objects_all_samples.txt") %>%
+	        column_to_rownames("sample")
+sample_names <- c("cca_joint_ct1915s_small", "cca_joint_ct2076s_small")
+
+for(i in 1:length(sample_names)) {
+	data_path <- samples[sample_names[i], "data_path"]
+	seurat <- readRDS(data_path)
+	seurat_name <- gsub("_small", "", sample_names[i])
+	assign(seurat_name, seurat)
+	rm(seurat)
+}
+
+# Add cca-joint pris, cca-joint mets and spon-met cluster identities to metadata
+cca_joint_pris_mets_sponmet@meta.data$cluster <- cca_joint_pris_mets_sponmet@ident
+cca_joint_pris_mets_sponmet@meta.data$orig.ident1 <- ifelse(cca_joint_pris_mets_sponmet@meta.data$orig.ident %in% c("pri1", "pri2"), "primary", ifelse(cca_joint_pris_mets_sponmet@meta.data$orig.ident %in% c("met1", "met2"), "metastasis", "spon_metastasis"))
+						    
+## get the cluster identity in the joint replicates.
+pris_cells <- gsub("ct1915_2", "pri2", gsub("ct1915_1", "pri1", cca_joint_ct1915s@cell.names))
+mets_cells <- gsub("ct2076_2", "met2", gsub("ct2076_1", "met1", cca_joint_ct2076s@cell.names))
+cca_joint_pris_mets_sponmet@meta.data$indiv1.clu <- NA
+cca_joint_pris_mets_sponmet@meta.data$indiv1.clu.anno <- NA
+## pris
+to.add <- cca_joint_ct1915s@meta.data$cluster %>% as.data.frame()
+colnames(to.add) <- "cluster"; to.add$cluster <- as.character(to.add$cluster)
+to.add <- to.add %>% separate(cluster, into = c("cluster", "cluster_anno"), sep = "-")
+cca_joint_pris_mets_sponmet@meta.data[pris_cells, c("indiv1.clu", "indiv1.clu.anno")] <- to.add[pris_cells,]
+## mets
+to.add <- cca_joint_ct2076s@meta.data$cluster %>% as.data.frame()
+colnames(to.add) <- "cluster"; to.add$cluster <- as.character(to.add$cluster)
+to.add <- to.add %>% separate(cluster, into = c("cluster", "cluster_anno"), sep = "-")
+cca_joint_pris_mets_sponmet@meta.data[mets_cells, c("indiv1.clu", "indiv1.clu.anno")] <- to.add[mets_cells,]
+## spon-met
+to.add <- spon_met@ident %>% as.data.frame()
+colnames(to.add) <- "cluster"; to.add$cluster <- as.character(to.add$cluster)
+to.add <- to.add %>% separate(cluster, into = c("cluster", "cluster_anno"), sep = "-")
+cca_joint_pris_mets_sponmet@meta.data[sponmet_cells, c("indiv1.clu", "indiv1.clu.anno")] <- to.add[sponmet_cells,]
+
+```
+
+```{r save_data, cache=FALSE}
+
+pris_mets_sponmet_cells <- cca_joint_pris_mets_sponmet@cell.names
+cells_to_keep <- pris_mets_sponmet_cells[which(pris_mets_sponmet_cells %in% c(pris_cells, mets_cells, sponmet_cells))] # remove the 23 cells in pri1 with nUMI more than 60000 (i.e. the cluster 9 in cca-joint pris)
+cca_joint_pris_mets_sponmet <- SubsetData(cca_joint_pris_mets_sponmet, cells.use = cells_to_keep)
+
+cca_joint_pris_mets_sponmet@meta.data$orig.ident <- factor(cca_joint_pris_mets_sponmet@meta.data$orig.ident, levels = c("pri1", "pri2", "met1", "met2", "sponmet"))
+
+# remove useless column(s)
+if("old.ident" %in% colnames(cca_joint_pris_mets_sponmet@meta.data)) cca_joint_pris_mets_sponmet@meta.data@meta.data$old.ident <- NULL
+
+cca_joint_pris_mets_sponmet_small <- reduceSeurat(cca_joint_pris_mets_sponmet, n_ccs = 3)
+
+saveRDS(cca_joint_pris_mets_sponmet, file = "./objects/14/cca_joint_pris_mets_sponmet_cc30_res0.8_rm23cells.rds")
+saveRDS(cca_joint_pris_mets_sponmet_small, file = "./objects/14/cca_joint_pris_mets_sponmet_cc30_res0.8_rm23cells_small.rds")
+
+rm(cca_joint_ct1915s, cca_joint_ct2076s, cca_joint_pris_mets_sponmet_small)
+
+```
+
+### plotting
+
+```{r cca_plots, fig.height=6, fig.width=13}
+
+sample_pal2 <- sample_pal; names(sample_pal2) <- levels(cca_joint_pris_mets_sponmet@meta.data$orig.ident)
+
+p1 <- DimPlot(cca_joint_pris_mets_sponmet, reduction.use = "umap", do.return = T)
+p2 <- DimPlot(cca_joint_pris_mets_sponmet, reduction.use = "umap", group.by = "orig.ident", cols.use = sample_pal2, do.return = T)
+p1 + p2
+
+```
+
+```{r cca_plots1, fig.height=10, fig.width=8}
+
+cca_joint_pris_mets_sponmet_df <- cbind(cca_joint_pris_mets_sponmet@dr$tsne@cell.embeddings, 
+                                cca_joint_pris_mets_sponmet@dr$umap@cell.embeddings) %>% 
+  as.data.frame() %>% 
+  mutate(Origin = cca_joint_pris_mets_sponmet@meta.data$orig.ident, 
+         Sample = cca_joint_pris_mets_sponmet@meta.data$orig.ident1, 
+         Cell = row.names(cca_joint_pris_mets_sponmet@meta.data), 
+         Indiv = as.character(cca_joint_pris_mets_sponmet@meta.data$indiv.clu), 
+         Indiv1 = as.character(cca_joint_pris_mets_sponmet@meta.data$indiv1.clu), 
+         Joint = cca_joint_pris_mets_sponmet@ident)
+
+p1 <- ind_umap_joint_space(cca_joint_pris_mets_sponmet_df, "pri1", sample_pal2, sample_column = "Origin", var_to_plot = "Origin", axis_default = FALSE, pt_size = 0.8, x_lmin = -2.5, x_lmax = 2.5, y_lmin = -5, y_lmax = 5, by_x = 2.5, by_y = 2.5) + ggtitle("Primary PDX 1 cells only")
+p2 <- ind_umap_joint_space(cca_joint_pris_mets_sponmet_df, "pri2", sample_pal2, sample_column = "Origin", var_to_plot = "Origin", axis_default = FALSE, pt_size = 0.8, x_lmin = -2.5, x_lmax = 2.5, y_lmin = -5, y_lmax = 5, by_x = 2.5, by_y = 2.5) + ggtitle("Primary PDX 2 cells only")
+p3 <- ind_umap_joint_space(cca_joint_pris_mets_sponmet_df, "met1", sample_pal2, sample_column = "Origin", var_to_plot = "Origin", axis_default = FALSE, pt_size = 0.8, x_lmin = -2.5, x_lmax = 2.5, y_lmin = -5, y_lmax = 5, by_x = 2.5, by_y = 2.5) + ggtitle("Metastatic PDX 1 cells only")
+p4 <- ind_umap_joint_space(cca_joint_pris_mets_sponmet_df, "met2", sample_pal2, sample_column = "Origin", var_to_plot = "Origin", axis_default = FALSE, pt_size = 0.8, x_lmin = -2.5, x_lmax = 2.5, y_lmin = -5, y_lmax = 5, by_x = 2.5, by_y = 2.5) + ggtitle("Metastatic PDX 2 cells only")
+p5 <- ind_umap_joint_space(cca_joint_pris_mets_sponmet_df, "sponmet", sample_pal2, sample_column = "Origin", var_to_plot = "Origin", axis_default = FALSE, pt_size = 0.8, x_lmin = -2.5, x_lmax = 2.5, y_lmin = -5, y_lmax = 5, by_x = 2.5, by_y = 2.5) + ggtitle("Spontaneous metastatic cells only")
+
+p1 + p2 + p3 + p4 + p5 + plot_layout(ncol = 2)
+
+```
+
+```{r cca_plots2, fig.height=10, fig.width=8}
+
+p1 <- ind_umap_joint_space(cca_joint_pris_mets_sponmet_df, "pri1", pri1_cols, sample_column = "Origin", var_to_plot = "Indiv", axis_default = FALSE, pt_size = 0.8, x_lmin = -2.5, x_lmax = 2.5, y_lmin = -5, y_lmax = 5, by_x = 2.5, by_y = 2.5) + ggtitle("Primary PDX1 cells only")
+p2 <- ind_umap_joint_space(cca_joint_pris_mets_sponmet_df, "pri2", pri2_cols, sample_column = "Origin", var_to_plot = "Indiv", axis_default = FALSE, pt_size = 0.8, x_lmin = -2.5, x_lmax = 2.5, y_lmin = -5, y_lmax = 5, by_x = 2.5, by_y = 2.5) + ggtitle("Primary PDX2 cells only")
+p3 <- ind_umap_joint_space(cca_joint_pris_mets_sponmet_df, "met1", met1_cols, sample_column = "Origin", var_to_plot = "Indiv", axis_default = FALSE, pt_size = 0.8, x_lmin = -2.5, x_lmax = 2.5, y_lmin = -5, y_lmax = 5, by_x = 2.5, by_y = 2.5) + ggtitle("Metastatic PDX1 cells only")
+p4 <- ind_umap_joint_space(cca_joint_pris_mets_sponmet_df, "met2", met2_cols, sample_column = "Origin", var_to_plot = "Indiv", axis_default = FALSE, pt_size = 0.8, x_lmin = -2.5, x_lmax = 2.5, y_lmin = -5, y_lmax = 5, by_x = 2.5, by_y = 2.5) + ggtitle("Metastatic PDX2 cells only")
+p5 <- ind_umap_joint_space(cca_joint_pris_mets_sponmet_df, "sponmet", sponmet_cols, sample_column = "Origin", var_to_plot = "Indiv", axis_default = FALSE, pt_size = 0.8, x_lmin = -2.5, x_lmax = 2.5, y_lmin = -5, y_lmax = 5, by_x = 2.5, by_y = 2.5) + ggtitle("Spontaneous metastatic cells only")
+
+p1 + p2 + p3 + p4 + p5 + plot_layout(ncol = 2)
+
+```
+
+```{r cca_plots3, fig.height=6.8, fig.width=8}
+
+p1 <- ind_umap_joint_space(cca_joint_pris_mets_sponmet_df, "primary", cca_joint_pris_cols, var_to_plot = "Indiv1", axis_default = FALSE, pt_size = 0.8, x_lmin = -2.5, x_lmax = 2.5, y_lmin = -5, y_lmax = 5, by_x = 2.5, by_y = 2.5) + ggtitle("Primary PDX cells only")
+p2 <- ind_umap_joint_space(cca_joint_pris_mets_sponmet_df, "metastasis", cca_joint_mets_cols, var_to_plot = "Indiv1", axis_default = FALSE, pt_size = 0.8, x_lmin = -2.5, x_lmax = 2.5, y_lmin = -5, y_lmax = 5, by_x = 2.5, by_y = 2.5) + ggtitle("Metastatic PDX cells only")
+p3 <- ind_umap_joint_space(cca_joint_pris_mets_sponmet_df, "spon_metastasis", sponmet_cols, var_to_plot = "Indiv1", axis_default = FALSE, pt_size = 0.8, x_lmin = -2.5, x_lmax = 2.5, y_lmin = -5, y_lmax = 5, by_x = 2.5, by_y = 2.5) + ggtitle("Spontaneous metastatic cells only")
+
+p1 + p2 + p3 + plot_layout(ncol = 2)
+
+```
+
+### markers
+
+```{r markers, fig.height=20, fig.width=7}
+
+all_markers <- FindAllMarkers(cca_joint_pris_mets_sponmet, only.pos = TRUE, min.pct = 0.25, thresh.use = 0.25)
+write.table(all_markers, file = "./outputs/14/cca_joint_pris_mets_sponmet_all_markers.txt", sep="\t", quote=FALSE, row.names=FALSE)
+all_markers_with_annotation <- all_markers %>% 
+  merge(raw_genes, by.x = "gene", by.y = "unique_gene") %>% 
+  dplyr::rename(seurat_unique_gene = gene) %>% 
+  merge(annotation, by = c("ensembl_gene_id", "external_gene_id")) %>% 
+  dplyr::arrange(cluster, p_val) %>% 
+  dplyr::rename(gene = external_gene_id)
+write.table(all_markers_with_annotation, file = "./outputs/14/cca_joint_pris_mets_sponmet_all_markers_with_annotation.txt", sep="\t", quote=FALSE, row.names=FALSE)
+
+top10 <- all_markers_with_annotation %>% group_by(cluster) %>% top_n(10, avg_logFC)
+p <- DoHeatmap_with_anno(cca_joint_pris_mets_sponmet, gene.table = top10, genes.use = top10$gene, cluster_rows = FALSE, cluster_cols = FALSE, sample_pal = sample_pal, out_dir = "./outputs/14", suffix = "_avglogFC_top_10_genes_per_cluster")
+DoHeatmap(cca_joint_pris_mets_sponmet, genes.use = top10$gene)
+
+```
+
+# Session Info
+
+```{r ses_info}
+
+sessionInfo()
+
+```

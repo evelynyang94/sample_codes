@@ -1,0 +1,918 @@
+---
+title: "Quantification of the degree of dispersion regarding CC regression"
+author: "Yang"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: show
+    css: ../../../resources/custom.css
+    df_print: paged
+    number_sections: yes
+    theme: flatly
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(message = TRUE,
+                      warning = FALSE,
+                      error = FALSE,
+                      cache = TRUE,
+                      cache.path = "cache/19/",
+                      fig.keep = "all",
+                      dev = c("png", "pdf"),
+                      fig.path = "figures/19/",
+                      cache.lazy = FALSE,
+                      fig.width = 10,
+                      fig.height = 7.5)
+
+options(knitr.table.format = "html") 
+knitr::opts_knit$set(width = 1200)
+knitr::opts_template$set(d = list(fig.height = 8, fig.width = 15.5))
+knitr::opts_template$set(v = list(fig.height = 8, fig.width = 11))
+
+```
+
+# README
+
+1. Entropy
+Quantify the degree of dispersion in each cluster with iteration 100 for data before cell cycle regression and after. To show that G2M phase cluster expanded in the after regression space.
+2. Standard distance deviation (SDD)/standard deviational ellipse (SDE)
+https://rstudio-pubs-static.s3.amazonaws.com/202534_2c5edc19016247ac9ecfc5713b4604f2.html
+
+# Setup
+
+```{r libs, message=FALSE, warning=FALSE, cache = FALSE}
+
+library(Seurat)
+library(data.table)
+library(tidyverse)
+library(plyr)
+library(glue)
+library(unikn)
+library(cytobox)
+
+source("./functions.R")
+
+```
+
+# Configuration
+
+```{r config}
+
+samples <- fread("../../../resources/paths_to_seurat_objects_all_samples.txt") %>% 
+  column_to_rownames("sample")
+sample_names <- c("ct1915_1", "ct1915_1_ccreg", "ct1915_2", "ct1915_2_ccreg", "ct2076_1", "ct2076_1_ccreg", "ct2076_2", "ct2076_2_ccreg", "spon_met", "spon_met_ccreg", "cca_joint_ct1915s", "cca_joint_ct1915s_ccreg", "cca_joint_ct2076s", "cca_joint_ct2076s_ccreg")
+
+pri1_cols <- c("#0F52BA", "#A65628", "#3CB371", "#DC143C", "#FF1493", "#9C79BB", "#FFC50B", "#4B0082")
+pri2_cols <- c("#0F52BA", "#E50028", "#7A429E", "#A65628", "#FFC50B", "#FF1493")
+met1_cols <- c("#E50028", "#4D4E4E", "#7A429E", "#0F52BA", "#FFC50B")
+met2_cols <- c("#0F52BA", "#E50028", "#7A429E", "#4D4E4E", "#00CED1", "#26968F", "#FF7E5F", "#A65628")
+sponmet_cols <- c("#0F52BA", "#E50028", "#7A429E", "#FFC50B")
+cca_joint_pris_cols <- c("#0F52BA", "#DC143C", "#3CB371", "#7A429E", "#FF1493", "#FFDE75", "#EE89FF", "#A65628", "#FFC50B")
+cca_joint_mets_cols <- c("#0F52BA", "#4D4E4E", "#E50028", "#7A429E", "#00BE67", "#FFC50B", "#E86140", "#26968F", "#A65628")
+
+```
+
+The best measure is the geometric median absolute deviation (MAD)
+
+# Primary PDX1
+
+## Load data
+
+```{r pri1_data, cache=FALSE}
+
+for(sample in sample_names[c(1, 2)]) {
+  data_path <- samples[sample, "data_path"]
+  seurat <- readRDS(data_path)
+  assign(sample, seurat)
+  rm(seurat)
+}
+
+if (is.null(ct1915_1_ccreg@meta.data$cluster) | !is.factor(ct1915_1_ccreg@meta.data$cluster)) {
+  ct1915_1_ccreg@meta.data$cluster <- ct1915_1@meta.data$cluster
+  saveRDS(ct1915_1_ccreg, file = samples["ct1915_1_ccreg", "data_path"])
+} else if (! identical(levels(ct1915_1_ccreg@meta.data$cluster), levels(ct1915_1@meta.data$cluster))) {
+  old <- levels(ct1915_1_ccreg@meta.data$cluster); 
+  new <- levels(ct1915_1@meta.data$cluster)
+  ct1915_1_ccreg@meta.data$cluster <- mapvalues(ct1915_1_ccreg@meta.data$cluster, old, new)
+  saveRDS(ct1915_1_ccreg, file = samples["ct1915_1_ccreg", "data_path"])
+}
+
+```
+
+## Entropy
+
+```{r pri1_entropy, fig.width=8, fig.height=6}
+
+pri1_entropy <- calc_entropy(ct1915_1) %>% 
+  do.call(rbind, .) %>% as.data.frame() %>% 
+  add_column(sample = "pri1", .before = 1)
+pri1_ccreg_entropy <- calc_entropy(ct1915_1_ccreg) %>% 
+  do.call(rbind, .) %>% as.data.frame() %>% 
+  add_column(sample = "pri1_ccreg", .before = 1)
+
+entropy_all <- bind_rows(pri1_entropy, pri1_ccreg_entropy)
+
+ggplot(entropy_all, aes(x = cluster, y = entropy, fill = sample)) + 
+  geom_boxplot() + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+The entropy result doesn't look good, which makes sense though, as clusters are continuum, the cells on the boundary accounts for the dispersion between clusters.
+
+## Standard distance deviation
+
+https://rstudio-pubs-static.s3.amazonaws.com/202534_2c5edc19016247ac9ecfc5713b4604f2.html
+
+standard distance (SD): euclidean distance
+standard distance deviation: sqrt(sum(SD^2)/n-2)
+
+```{r pri1_sdd, fig.width=8, fig.height=6}
+
+# compare radius (or area, but here I choose )
+pri1_sdd <- calculate_sdd(ct1915_1, out_dir = "outputs/19", prefix = "pri1")
+pri1_ccreg_sdd <- calculate_sdd(ct1915_1_ccreg, out_dir = "outputs/19", prefix = "pri1_ccreg")
+
+pri1_sdd <- pri1_sdd %>% as.data.frame() %>% 
+  add_column(sample = "Pri1_before_CCreg", .before = 1)
+pri1_ccreg_sdd <- pri1_ccreg_sdd %>% as.data.frame() %>% 
+  add_column(sample = "Pri1_after_CCreg", .before = 1)
+pri1_sdd_both <- rbind(pri1_sdd[, c("sample", "id", "SDD.radius", "SDD.area")], 
+                       pri1_ccreg_sdd[, c("sample", "id", "SDD.radius", "SDD.area")])
+colnames(pri1_sdd_both)[2] <- "cluster"
+pri1_sdd_both$sample <- factor(pri1_sdd_both$sample, levels = c("Pri1_before_CCreg", "Pri1_after_CCreg"))
+ggplot(pri1_sdd_both, aes(x=cluster, y=SDD.radius, fill=sample)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Radius of SDD") + 
+  scale_fill_manual(values = usecol(pal_unikn_pref)[c(6, 7)]) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+# ratio of the SDD.radius between pri1_before_CCreg and pri1_after_CCreg
+pri1_sdd_ratio <- pri1_ccreg_sdd[, c("SDD.radius", "SDD.area")]/pri1_sdd[, c("SDD.radius", "SDD.area")]
+pri1_sdd_ratio <- pri1_sdd_ratio %>% 
+  add_column(cluster = pri1_ccreg_sdd$id, .before = 1)
+colnames(pri1_sdd_ratio)[2:3] <- c("SDD.radius.ratio", "SDD.area.ratio")
+
+ggplot(pri1_sdd_ratio, aes(x=cluster, y=SDD.radius.ratio, fill=cluster)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Ratio of SDD radius (after vs. before)") + 
+  scale_fill_manual(values = pri1_cols) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+## Geometric median absolute deviation (MAD)
+
+```{r pri1_geomad, fig.width=8, fig.height=6}
+
+pri1_geomad <- calculate_geo_mad(ct1915_1) %>% as.data.frame() %>% 
+  add_column(sample = "Pri1_before_CCreg", .before = 1)
+pri1_ccreg_geomad <- calculate_geo_mad(ct1915_1_ccreg) %>% as.data.frame() %>% 
+  add_column(sample = "Pri1_after_CCreg", .before = 1)
+
+pri1_geomad_both <- rbind(pri1_geomad, pri1_ccreg_geomad)
+pri1_geomad_both$sample <- factor(pri1_geomad_both$sample, levels = c("Pri1_before_CCreg", "Pri1_after_CCreg"))
+ggplot(pri1_geomad_both, aes(x=cluster, y=geometric_mad, fill=sample)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Geometric MAD") + 
+  scale_fill_manual(values = usecol(pal_unikn_pref)[c(6, 7)]) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+# ratio of geometric MAD (median absolute deviation)
+pri1_geomad_ratio <- pri1_ccreg_geomad[, "geometric_mad"]/pri1_geomad[, "geometric_mad"]
+pri1_geomad_ratio <- pri1_geomad_ratio %>% as.data.frame() %>% 
+  add_column(cluster = pri1_ccreg_geomad$cluster, .before = 1)
+colnames(pri1_geomad_ratio)[2] <- c("geo_mad_ratio")
+
+ggplot(pri1_geomad_ratio, aes(x=cluster, y=geo_mad_ratio, fill=cluster)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Ratio of Geometric MAD (after vs. before)") + 
+  scale_fill_manual(values = pri1_cols) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+# Primary PDX2
+
+## Load data
+
+```{r pri2_data, cache=FALSE}
+
+for(sample in sample_names[c(3, 4)]) {
+  data_path <- samples[sample, "data_path"]
+  seurat <- readRDS(data_path)
+  assign(sample, seurat)
+  rm(seurat)
+}
+
+if (is.null(ct1915_2_ccreg@meta.data$cluster) | !is.factor(ct1915_2_ccreg@meta.data$cluster)) {
+  ct1915_2_ccreg@meta.data$cluster <- ct1915_2@meta.data$cluster
+  saveRDS(ct1915_2_ccreg, file = samples["ct1915_2_ccreg", "data_path"])
+} else if (! identical(levels(ct1915_2_ccreg@meta.data$cluster), levels(ct1915_2@meta.data$cluster))) {
+  old <- levels(ct1915_2_ccreg@meta.data$cluster); 
+  new <- levels(ct1915_2@meta.data$cluster)
+  ct1915_2_ccreg@meta.data$cluster <- mapvalues(ct1915_2_ccreg@meta.data$cluster, old, new)
+  saveRDS(ct1915_2_ccreg, file = samples["ct1915_2_ccreg", "data_path"])
+}
+
+```
+
+## Entropy
+
+```{r pri2_entropy, fig.width=8, fig.height=6}
+
+pri2_entropy <- calc_entropy(ct1915_2) %>% 
+  do.call(rbind, .) %>% as.data.frame() %>% 
+  add_column(sample = "pri2", .before = 1)
+pri2_ccreg_entropy <- calc_entropy(ct1915_2_ccreg) %>% 
+  do.call(rbind, .) %>% as.data.frame() %>% 
+  add_column(sample = "pri2_ccreg", .before = 1)
+
+entropy_all <- bind_rows(pri2_entropy, pri2_ccreg_entropy)
+
+ggplot(entropy_all, aes(x = cluster, y = entropy, fill = sample)) + 
+  geom_boxplot() + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+The entropy result doesn't look good, which makes sense though, as clusters are continuum, the cells on the boundary accounts for the dispersion between clusters.
+
+## Standard distance deviation
+
+https://rstudio-pubs-static.s3.amazonaws.com/202534_2c5edc19016247ac9ecfc5713b4604f2.html
+
+```{r pri2_sdd, fig.width=8, fig.height=6}
+
+# compare radius or area
+pri2_sdd <- calculate_sdd(ct1915_2, out_dir = "outputs/19", prefix = "pri2")
+pri2_ccreg_sdd <- calculate_sdd(ct1915_2_ccreg, out_dir = "outputs/19", prefix = "pri2_ccreg")
+
+pri2_sdd <- pri2_sdd %>% as.data.frame() %>% 
+  add_column(sample = "pri2_before_CCreg", .before = 1)
+pri2_ccreg_sdd <- pri2_ccreg_sdd %>% as.data.frame() %>% 
+  add_column(sample = "pri2_after_CCreg", .before = 1)
+pri2_sdd_both <- rbind(pri2_sdd[, c("sample", "id", "SDD.radius", "SDD.area")], 
+                       pri2_ccreg_sdd[, c("sample", "id", "SDD.radius", "SDD.area")])
+colnames(pri2_sdd_both)[2] <- "cluster"
+pri2_sdd_both$sample <- factor(pri2_sdd_both$sample, levels = c("pri2_before_CCreg", "pri2_after_CCreg"))
+ggplot(pri2_sdd_both, aes(x=cluster, y=SDD.radius, fill=sample)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Radius of SDD") + 
+  scale_fill_manual(values = usecol(pal_unikn_pref)[c(6, 7)]) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))  # or y=SDD.area if want to use area
+# ratio of the SDD.radius between pri2_before_CCreg and pri2_after_CCreg
+pri2_sdd_ratio <- pri2_ccreg_sdd[, c("SDD.radius", "SDD.area")]/pri2_sdd[, c("SDD.radius", "SDD.area")]
+pri2_sdd_ratio <- pri2_sdd_ratio %>% 
+  add_column(cluster = pri2_ccreg_sdd$id, .before = 1)
+colnames(pri2_sdd_ratio)[2:3] <- c("SDD.radius.ratio", "SDD.area.ratio")
+
+ggplot(pri2_sdd_ratio, aes(x=cluster, y=SDD.radius.ratio, fill=cluster)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Ratio of SDD radius (after vs. before)") + 
+  scale_fill_manual(values = pri2_cols) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+## Geometric median absolute deviation (MAD)
+
+```{r pri2_geomad, fig.width=8, fig.height=6}
+
+pri2_geomad <- calculate_geo_mad(ct1915_2) %>% as.data.frame() %>% 
+  add_column(sample = "pri2_before_CCreg", .before = 1)
+pri2_ccreg_geomad <- calculate_geo_mad(ct1915_2_ccreg) %>% as.data.frame() %>% 
+  add_column(sample = "pri2_after_CCreg", .before = 1)
+
+pri2_geomad_both <- rbind(pri2_geomad, pri2_ccreg_geomad)
+pri2_geomad_both$sample <- factor(pri2_geomad_both$sample, levels = c("pri2_before_CCreg", "pri2_after_CCreg"))
+ggplot(pri2_geomad_both, aes(x=cluster, y=geometric_mad, fill=sample)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Geometric MAD") + 
+  scale_fill_manual(values = usecol(pal_unikn_pref)[c(6, 7)]) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+# ratio of geometric MAD (median absolute deviation)
+pri2_geomad_ratio <- pri2_ccreg_geomad[, "geometric_mad"]/pri2_geomad[, "geometric_mad"]
+pri2_geomad_ratio <- pri2_geomad_ratio %>% as.data.frame() %>% 
+  add_column(cluster = pri2_ccreg_geomad$cluster, .before = 1)
+colnames(pri2_geomad_ratio)[2] <- c("geo_mad_ratio")
+
+ggplot(pri2_geomad_ratio, aes(x=cluster, y=geo_mad_ratio, fill=cluster)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Ratio of Geometric MAD (after vs. before)") + 
+  scale_fill_manual(values = pri2_cols) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+# Metastatic PDX1
+
+## Load data
+
+```{r met1_data, cache=FALSE}
+
+for(sample in sample_names[c(5, 6)]) {
+  data_path <- samples[sample, "data_path"]
+  seurat <- readRDS(data_path)
+  assign(sample, seurat)
+  rm(seurat)
+}
+
+if (is.null(ct2076_1_ccreg@meta.data$cluster) | !is.factor(ct2076_1_ccreg@meta.data$cluster)) {
+  ct2076_1_ccreg@meta.data$cluster <- ct2076_1@meta.data$cluster
+  saveRDS(ct2076_1_ccreg, file = samples["ct2076_1_ccreg", "data_path"])
+} else if (! identical(levels(ct2076_1_ccreg@meta.data$cluster), levels(ct2076_1@meta.data$cluster))) {
+  old <- levels(ct2076_1_ccreg@meta.data$cluster); 
+  new <- levels(ct2076_1@meta.data$cluster)
+  ct2076_1_ccreg@meta.data$cluster <- mapvalues(ct2076_1_ccreg@meta.data$cluster, old, new)
+  saveRDS(ct2076_1_ccreg, file = samples["ct2076_1_ccreg", "data_path"])
+}
+
+```
+
+## Entropy
+
+```{r met1_entropy, fig.width=8, fig.height=6}
+
+met1_entropy <- calc_entropy(ct2076_1) %>% 
+  do.call(rbind, .) %>% as.data.frame() %>% 
+  add_column(sample = "met1", .before = 1)
+met1_ccreg_entropy <- calc_entropy(ct2076_1_ccreg) %>% 
+  do.call(rbind, .) %>% as.data.frame() %>% 
+  add_column(sample = "met1_ccreg", .before = 1)
+
+entropy_all <- bind_rows(met1_entropy, met1_ccreg_entropy)
+
+ggplot(entropy_all, aes(x = cluster, y = entropy, fill = sample)) + 
+  geom_boxplot() + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+The entropy result doesn't look good, which makes sense though, as clusters are continuum, the cells on the boundary accounts for the dispersion between clusters.
+
+## Standard distance deviation
+
+https://rstudio-pubs-static.s3.amazonaws.com/202534_2c5edc19016247ac9ecfc5713b4604f2.html
+
+```{r met1_sdd, fig.width=8, fig.height=6}
+
+# compare radius or area
+met1_sdd <- calculate_sdd(ct2076_1, out_dir = "outputs/19", prefix = "met1")
+met1_ccreg_sdd <- calculate_sdd(ct2076_1_ccreg, out_dir = "outputs/19", prefix = "met1_ccreg")
+
+met1_sdd <- met1_sdd %>% as.data.frame() %>% 
+  add_column(sample = "met1_before_CCreg", .before = 1)
+met1_ccreg_sdd <- met1_ccreg_sdd %>% as.data.frame() %>% 
+  add_column(sample = "met1_after_CCreg", .before = 1)
+met1_sdd_both <- rbind(met1_sdd[, c("sample", "id", "SDD.radius", "SDD.area")], 
+                       met1_ccreg_sdd[, c("sample", "id", "SDD.radius", "SDD.area")])
+colnames(met1_sdd_both)[2] <- "cluster"
+met1_sdd_both$sample <- factor(met1_sdd_both$sample, levels = c("met1_before_CCreg", "met1_after_CCreg"))
+ggplot(met1_sdd_both, aes(x=cluster, y=SDD.radius, fill=sample)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Radius of SDD") + 
+  scale_fill_manual(values = usecol(pal_unikn_pref)[c(6, 7)]) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))  # or y=SDD.area if want to use area
+# ratio of the SDD.radius between met1_before_CCreg and met1_after_CCreg
+met1_sdd_ratio <- met1_ccreg_sdd[, c("SDD.radius", "SDD.area")]/met1_sdd[, c("SDD.radius", "SDD.area")]
+met1_sdd_ratio <- met1_sdd_ratio %>% 
+  add_column(cluster = met1_ccreg_sdd$id, .before = 1)
+colnames(met1_sdd_ratio)[2:3] <- c("SDD.radius.ratio", "SDD.area.ratio")
+
+ggplot(met1_sdd_ratio, aes(x=cluster, y=SDD.radius.ratio, fill=cluster)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Ratio of SDD radius (after vs. before)") + 
+  scale_fill_manual(values = met1_cols) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+## Geometric median absolute deviation (MAD)
+
+```{r met1_geomad, fig.width=8, fig.height=6}
+
+met1_geomad <- calculate_geo_mad(ct2076_1) %>% as.data.frame() %>% 
+  add_column(sample = "met1_before_CCreg", .before = 1)
+met1_ccreg_geomad <- calculate_geo_mad(ct2076_1_ccreg) %>% as.data.frame() %>% 
+  add_column(sample = "met1_after_CCreg", .before = 1)
+
+met1_geomad_both <- rbind(met1_geomad, met1_ccreg_geomad)
+met1_geomad_both$sample <- factor(met1_geomad_both$sample, levels = c("met1_before_CCreg", "met1_after_CCreg"))
+ggplot(met1_geomad_both, aes(x=cluster, y=geometric_mad, fill=sample)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Geometric MAD") + 
+  scale_fill_manual(values = usecol(pal_unikn_pref)[c(6, 7)]) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+# ratio of geometric MAD (median absolute deviation)
+met1_geomad_ratio <- met1_ccreg_geomad[, "geometric_mad"]/met1_geomad[, "geometric_mad"]
+met1_geomad_ratio <- met1_geomad_ratio %>% as.data.frame() %>% 
+  add_column(cluster = met1_ccreg_geomad$cluster, .before = 1)
+colnames(met1_geomad_ratio)[2] <- c("geo_mad_ratio")
+
+ggplot(met1_geomad_ratio, aes(x=cluster, y=geo_mad_ratio, fill=cluster)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Ratio of Geometric MAD (after vs. before)") + 
+  scale_fill_manual(values = met1_cols) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+# Metastatic PDX2
+
+## Load data
+
+```{r met2_data, cache=FALSE}
+
+for(sample in sample_names[c(7, 8)]) {
+  data_path <- samples[sample, "data_path"]
+  seurat <- readRDS(data_path)
+  assign(sample, seurat)
+  rm(seurat)
+}
+
+if (is.null(ct2076_2_ccreg@meta.data$cluster) | !is.factor(ct2076_2_ccreg@meta.data$cluster)) {
+  ct2076_2_ccreg@meta.data$cluster <- ct2076_2@meta.data$cluster
+  saveRDS(ct2076_2_ccreg, file = samples["ct2076_2_ccreg", "data_path"])
+} else if (! identical(levels(ct2076_2_ccreg@meta.data$cluster), levels(ct2076_2@meta.data$cluster))) {
+  old <- levels(ct2076_2_ccreg@meta.data$cluster); 
+  new <- levels(ct2076_2@meta.data$cluster)
+  ct2076_2_ccreg@meta.data$cluster <- mapvalues(ct2076_2_ccreg@meta.data$cluster, old, new)
+  saveRDS(ct2076_2_ccreg, file = samples["ct2076_2_ccreg", "data_path"])
+}
+
+```
+
+## Entropy
+
+```{r met2_entropy, fig.width=8, fig.height=6}
+
+met2_entropy <- calc_entropy(ct2076_2) %>% 
+  do.call(rbind, .) %>% as.data.frame() %>% 
+  add_column(sample = "met2", .before = 1)
+met2_ccreg_entropy <- calc_entropy(ct2076_2_ccreg) %>% 
+  do.call(rbind, .) %>% as.data.frame() %>% 
+  add_column(sample = "met2_ccreg", .before = 1)
+
+entropy_all <- bind_rows(met2_entropy, met2_ccreg_entropy)
+
+ggplot(entropy_all, aes(x = cluster, y = entropy, fill = sample)) + 
+  geom_boxplot() + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+The entropy result doesn't look good, which makes sense though, as clusters are continuum, the cells on the boundary accounts for the dispersion between clusters.
+
+## Standard distance deviation
+
+https://rstudio-pubs-static.s3.amazonaws.com/202534_2c5edc19016247ac9ecfc5713b4604f2.html
+
+```{r met2_sdd, fig.width=8, fig.height=6}
+
+# compare radius or area
+met2_sdd <- calculate_sdd(ct2076_2, out_dir = "outputs/19", prefix = "met2")
+met2_ccreg_sdd <- calculate_sdd(ct2076_2_ccreg, out_dir = "outputs/19", prefix = "met2_ccreg")
+
+met2_sdd <- met2_sdd %>% as.data.frame() %>% 
+  add_column(sample = "met2_before_CCreg", .before = 1)
+met2_ccreg_sdd <- met2_ccreg_sdd %>% as.data.frame() %>% 
+  add_column(sample = "met2_after_CCreg", .before = 1)
+met2_sdd_both <- rbind(met2_sdd[, c("sample", "id", "SDD.radius", "SDD.area")], 
+                       met2_ccreg_sdd[, c("sample", "id", "SDD.radius", "SDD.area")])
+colnames(met2_sdd_both)[2] <- "cluster"
+met2_sdd_both$sample <- factor(met2_sdd_both$sample, levels = c("met2_before_CCreg", "met2_after_CCreg"))
+ggplot(met2_sdd_both, aes(x=cluster, y=SDD.radius, fill=sample)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("the radius of SDD") + 
+  scale_fill_manual(values = usecol(pal_unikn_pref)[c(6, 7)]) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))  # or y=SDD.area if want to use area
+# ratio of the SDD.radius between met2_before_CCreg and met2_after_CCreg
+met2_sdd_ratio <- met2_ccreg_sdd[, c("SDD.radius", "SDD.area")]/met2_sdd[, c("SDD.radius", "SDD.area")]
+met2_sdd_ratio <- met2_sdd_ratio %>% 
+  add_column(cluster = met2_ccreg_sdd$id, .before = 1)
+colnames(met2_sdd_ratio)[2:3] <- c("SDD.radius.ratio", "SDD.area.ratio")
+
+ggplot(met2_sdd_ratio, aes(x=cluster, y=SDD.radius.ratio, fill=cluster)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Ratio of SDD radius (after vs. before)") + 
+  scale_fill_manual(values = met2_cols) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+## Geometric median absolute deviation (MAD)
+
+```{r met2_geomad, fig.width=8, fig.height=6}
+
+met2_geomad <- calculate_geo_mad(ct2076_2) %>% as.data.frame() %>% 
+  add_column(sample = "met2_before_CCreg", .before = 1)
+met2_ccreg_geomad <- calculate_geo_mad(ct2076_2_ccreg) %>% as.data.frame() %>% 
+  add_column(sample = "met2_after_CCreg", .before = 1)
+
+met2_geomad_both <- rbind(met2_geomad, met2_ccreg_geomad)
+met2_geomad_both$sample <- factor(met2_geomad_both$sample, levels = c("met2_before_CCreg", "met2_after_CCreg"))
+ggplot(met2_geomad_both, aes(x=cluster, y=geometric_mad, fill=sample)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Geometric MAD") + 
+  scale_fill_manual(values = usecol(pal_unikn_pref)[c(6, 7)]) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+# ratio of geometric MAD (median absolute deviation)
+met2_geomad_ratio <- met2_ccreg_geomad[, "geometric_mad"]/met2_geomad[, "geometric_mad"]
+met2_geomad_ratio <- met2_geomad_ratio %>% as.data.frame() %>% 
+  add_column(cluster = met2_ccreg_geomad$cluster, .before = 1)
+colnames(met2_geomad_ratio)[2] <- c("geo_mad_ratio")
+
+ggplot(met2_geomad_ratio, aes(x=cluster, y=geo_mad_ratio, fill=cluster)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Ratio of Geometric MAD (after vs. before)") + 
+  scale_fill_manual(values = met2_cols) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+# Spontaneous lung metastasis
+
+## Load data
+
+```{r sponmet_data, cache=FALSE}
+
+for(sample in sample_names[c(9, 10)]) {
+  data_path <- samples[sample, "data_path"]
+  seurat <- readRDS(data_path)
+  assign(sample, seurat)
+  rm(seurat)
+}
+
+if (is.null(spon_met_ccreg@meta.data$cluster) | !is.factor(spon_met_ccreg@meta.data$cluster)) {
+  spon_met_ccreg@meta.data$cluster <- spon_met@meta.data$cluster
+  saveRDS(spon_met_ccreg, file = samples["spon_met_ccreg", "data_path"])
+} else if (! identical(levels(spon_met_ccreg@meta.data$cluster), levels(spon_met@meta.data$cluster))) {
+  old <- levels(spon_met_ccreg@meta.data$cluster); 
+  new <- levels(spon_met@meta.data$cluster)
+  spon_met_ccreg@meta.data$cluster <- mapvalues(spon_met_ccreg@meta.data$cluster, old, new)
+  saveRDS(spon_met_ccreg, file = samples["spon_met_ccreg", "data_path"])
+}
+
+```
+
+## Entropy
+
+```{r sponmet_entropy, fig.width=8, fig.height=6}
+
+sponmet_entropy <- calc_entropy(spon_met) %>% 
+  do.call(rbind, .) %>% as.data.frame() %>% 
+  add_column(sample = "sponmet", .before = 1)
+sponmet_ccreg_entropy <- calc_entropy(spon_met_ccreg) %>% 
+  do.call(rbind, .) %>% as.data.frame() %>% 
+  add_column(sample = "sponmet_ccreg", .before = 1)
+
+entropy_all <- bind_rows(sponmet_entropy, sponmet_ccreg_entropy)
+
+ggplot(entropy_all, aes(x = cluster, y = entropy, fill = sample)) + 
+  geom_boxplot() + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+The entropy result doesn't look good, which makes sense though, as clusters are continuum, the cells on the boundary accounts for the dispersion between clusters.
+
+## Standard distance deviation
+
+https://rstudio-pubs-static.s3.amazonaws.com/202534_2c5edc19016247ac9ecfc5713b4604f2.html
+
+```{r sponmet_sdd, fig.width=8, fig.height=6}
+
+# compare radius or area
+sponmet_sdd <- calculate_sdd(spon_met, out_dir = "outputs/19", prefix = "sponmet")
+sponmet_ccreg_sdd <- calculate_sdd(spon_met_ccreg, out_dir = "outputs/19", prefix = "sponmet_ccreg")
+
+sponmet_sdd <- sponmet_sdd %>% as.data.frame() %>% 
+  add_column(sample = "sponmet_before_CCreg", .before = 1)
+sponmet_ccreg_sdd <- sponmet_ccreg_sdd %>% as.data.frame() %>% 
+  add_column(sample = "sponmet_after_CCreg", .before = 1)
+sponmet_sdd_both <- rbind(sponmet_sdd[, c("sample", "id", "SDD.radius", "SDD.area")], 
+                       sponmet_ccreg_sdd[, c("sample", "id", "SDD.radius", "SDD.area")])
+colnames(sponmet_sdd_both)[2] <- "cluster"
+sponmet_sdd_both$sample <- factor(sponmet_sdd_both$sample, levels = c("sponmet_before_CCreg", "sponmet_after_CCreg"))
+ggplot(sponmet_sdd_both, aes(x=cluster, y=SDD.radius, fill=sample)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Radius of SDD") + 
+  scale_fill_manual(values = usecol(pal_unikn_pref)[c(6, 7)]) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))  # or y=SDD.area if want to use area
+# ratio of the SDD.radius between sponmet_before_CCreg and sponmet_after_CCreg
+sponmet_sdd_ratio <- sponmet_ccreg_sdd[, c("SDD.radius", "SDD.area")]/sponmet_sdd[, c("SDD.radius", "SDD.area")]
+sponmet_sdd_ratio <- sponmet_sdd_ratio %>% 
+  add_column(cluster = sponmet_ccreg_sdd$id, .before = 1)
+colnames(sponmet_sdd_ratio)[2:3] <- c("SDD.radius.ratio", "SDD.area.ratio")
+
+ggplot(sponmet_sdd_ratio, aes(x=cluster, y=SDD.radius.ratio, fill=cluster)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Ratio of SDD radius (after vs. before)") + 
+  scale_fill_manual(values = sponmet_cols) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+## Geometric median absolute deviation (MAD)
+
+```{r sponmet_geomad, fig.width=8, fig.height=6}
+
+sponmet_geomad <- calculate_geo_mad(spon_met) %>% as.data.frame() %>% 
+  add_column(sample = "sponmet_before_CCreg", .before = 1)
+sponmet_ccreg_geomad <- calculate_geo_mad(spon_met_ccreg) %>% as.data.frame() %>% 
+  add_column(sample = "sponmet_after_CCreg", .before = 1)
+
+sponmet_geomad_both <- rbind(sponmet_geomad, sponmet_ccreg_geomad)
+sponmet_geomad_both$sample <- factor(sponmet_geomad_both$sample, levels = c("sponmet_before_CCreg", "sponmet_after_CCreg"))
+ggplot(sponmet_geomad_both, aes(x=cluster, y=geometric_mad, fill=sample)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Geometric MAD") + 
+  scale_fill_manual(values = usecol(pal_unikn_pref)[c(6, 7)]) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+# ratio of geometric MAD (median absolute deviation)
+sponmet_geomad_ratio <- sponmet_ccreg_geomad[, "geometric_mad"]/sponmet_geomad[, "geometric_mad"]
+sponmet_geomad_ratio <- sponmet_geomad_ratio %>% as.data.frame() %>% 
+  add_column(cluster = sponmet_ccreg_geomad$cluster, .before = 1)
+colnames(sponmet_geomad_ratio)[2] <- c("geo_mad_ratio")
+
+ggplot(sponmet_geomad_ratio, aes(x=cluster, y=geo_mad_ratio, fill=cluster)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Ratio of Geometric MAD (after vs. before)") + 
+  scale_fill_manual(values = sponmet_cols) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+# CCA-joint Primary PDXs
+
+## Load data
+
+```{r cca_joint_pris_data, cache=FALSE}
+
+for(sample in sample_names[c(11, 12)]) {
+  data_path <- samples[sample, "data_path"]
+  seurat <- readRDS(data_path)
+  assign(sample, seurat)
+  rm(seurat)
+}
+
+cells_to_use <- cca_joint_ct1915s@cell.names
+cca_joint_ct1915s_ccreg <- SubsetData(cca_joint_ct1915s_ccreg, cells.use = cells_to_use)
+
+if (is.null(cca_joint_ct1915s_ccreg@meta.data$cluster) | !is.factor(cca_joint_ct1915s_ccreg@meta.data$cluster)) {
+  cca_joint_ct1915s_ccreg@meta.data$cluster <- cca_joint_ct1915s@meta.data$cluster[cca_joint_ct1915s_ccreg@cell.names, "cluster"]
+  saveRDS(cca_joint_ct1915s_ccreg, file = samples["cca_joint_ct1915s_ccreg", "data_path"])
+} else if (! identical(levels(cca_joint_ct1915s_ccreg@meta.data$cluster), levels(cca_joint_ct1915s@meta.data$cluster))) {
+  old <- levels(cca_joint_ct1915s_ccreg@meta.data$cluster); 
+  new <- levels(cca_joint_ct1915s@meta.data$cluster)
+  cca_joint_ct1915s_ccreg@meta.data$cluster <- mapvalues(cca_joint_ct1915s_ccreg@meta.data$cluster, old, new)
+  saveRDS(cca_joint_ct1915s_ccreg, file = samples["cca_joint_ct1915s_ccreg", "data_path"])
+}
+
+```
+
+## Entropy
+
+```{r cca_joint_pris_entropy, fig.width=8, fig.height=6}
+
+cca_joint_pris_entropy <- calc_entropy(cca_joint_ct1915s) %>% 
+  do.call(rbind, .) %>% as.data.frame() %>% 
+  add_column(sample = "cca_joint_pris", .before = 1)
+cca_joint_pris_ccreg_entropy <- calc_entropy(cca_joint_ct1915s_ccreg) %>% 
+  do.call(rbind, .) %>% as.data.frame() %>% 
+  add_column(sample = "cca_joint_pris_ccreg", .before = 1)
+
+entropy_all <- bind_rows(cca_joint_pris_entropy, cca_joint_pris_ccreg_entropy)
+
+ggplot(entropy_all, aes(x = cluster, y = entropy, fill = sample)) + 
+  geom_boxplot() + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+The entropy result doesn't look good, which makes sense though, as clusters are continuum, the cells on the boundary accounts for the dispersion between clusters.
+
+## Standard distance deviation
+
+https://rstudio-pubs-static.s3.amazonaws.com/202534_2c5edc19016247ac9ecfc5713b4604f2.html
+
+```{r cca_joint_pris_sdd, fig.width=8, fig.height=6}
+
+# compare radius or area
+cca_joint_pris_sdd <- calculate_sdd(cca_joint_ct1915s, out_dir = "outputs/19", prefix = "cca_joint_pris")
+cca_joint_pris_ccreg_sdd <- calculate_sdd(cca_joint_ct1915s_ccreg, out_dir = "outputs/19", prefix = "cca_joint_pris_ccreg")
+
+cca_joint_pris_sdd <- cca_joint_pris_sdd %>% as.data.frame() %>% 
+  add_column(sample = "cca_joint_pris_before_CCreg", .before = 1)
+cca_joint_pris_ccreg_sdd <- cca_joint_pris_ccreg_sdd %>% as.data.frame() %>% 
+  add_column(sample = "cca_joint_pris_after_CCreg", .before = 1)
+cca_joint_pris_sdd_both <- rbind(cca_joint_pris_sdd[, c("sample", "id", "SDD.radius", "SDD.area")], 
+                       cca_joint_pris_ccreg_sdd[, c("sample", "id", "SDD.radius", "SDD.area")])
+colnames(cca_joint_pris_sdd_both)[2] <- "cluster"
+cca_joint_pris_sdd_both$sample <- factor(cca_joint_pris_sdd_both$sample, levels = c("cca_joint_pris_before_CCreg", "cca_joint_pris_after_CCreg"))
+ggplot(cca_joint_pris_sdd_both, aes(x=cluster, y=SDD.radius, fill=sample)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Radius of SDD") + 
+  scale_fill_manual(values = usecol(pal_unikn_pref)[c(6, 7)]) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))  # or y=SDD.area if want to use area
+# ratio of the SDD.radius between cca_joint_pris_before_CCreg and cca_joint_pris_after_CCreg
+cca_joint_pris_sdd_ratio <- cca_joint_pris_ccreg_sdd[, c("SDD.radius", "SDD.area")]/cca_joint_pris_sdd[, c("SDD.radius", "SDD.area")]
+cca_joint_pris_sdd_ratio <- cca_joint_pris_sdd_ratio %>% 
+  add_column(cluster = cca_joint_pris_ccreg_sdd$id, .before = 1)
+colnames(cca_joint_pris_sdd_ratio)[2:3] <- c("SDD.radius.ratio", "SDD.area.ratio")
+
+ggplot(cca_joint_pris_sdd_ratio, aes(x=cluster, y=SDD.radius.ratio, fill=cluster)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Ratio of SDD radius (after vs. before)") + 
+  scale_fill_manual(values = cca_joint_pris_cols) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+## Geometric median absolute deviation (MAD)
+
+```{r cca_joint_pris_geomad, fig.width=8, fig.height=6}
+
+cca_joint_pris_geomad <- calculate_geo_mad(cca_joint_ct1915s) %>% as.data.frame() %>% 
+  add_column(sample = "cca_joint_pris_before_CCreg", .before = 1)
+cca_joint_pris_ccreg_geomad <- calculate_geo_mad(cca_joint_ct1915s_ccreg) %>% as.data.frame() %>% 
+  add_column(sample = "cca_joint_pris_after_CCreg", .before = 1)
+
+cca_joint_pris_geomad_both <- rbind(cca_joint_pris_geomad, cca_joint_pris_ccreg_geomad)
+cca_joint_pris_geomad_both$sample <- factor(cca_joint_pris_geomad_both$sample, levels = c("cca_joint_pris_before_CCreg", "cca_joint_pris_after_CCreg"))
+
+ggplot(cca_joint_pris_geomad_both, aes(x=cluster, y=geometric_mad, fill=sample)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Geometric MAD") + 
+  scale_fill_manual(values = usecol(pal_unikn_pref)[c(6, 7)]) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+# ratio of geometric MAD (median absolute deviation)
+cca_joint_pris_geomad_ratio <- cca_joint_pris_ccreg_geomad[, "geometric_mad"]/cca_joint_pris_geomad[, "geometric_mad"]
+cca_joint_pris_geomad_ratio <- cca_joint_pris_geomad_ratio %>% as.data.frame() %>% 
+  add_column(cluster = cca_joint_pris_ccreg_geomad$cluster, .before = 1)
+colnames(cca_joint_pris_geomad_ratio)[2] <- c("geo_mad_ratio")
+
+ggplot(cca_joint_pris_geomad_ratio, aes(x=cluster, y=geo_mad_ratio, fill=cluster)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Ratio of Geometric MAD (after vs. before)") + 
+  scale_fill_manual(values = cca_joint_pris_cols) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+# CCA-joint Metastatic PDXs
+
+## Load data
+
+```{r cca_joint_mets_data, cache=FALSE}
+
+for(sample in sample_names[c(13, 14)]) {
+  data_path <- samples[sample, "data_path"]
+  seurat <- readRDS(data_path)
+  assign(sample, seurat)
+  rm(seurat)
+}
+
+if (is.null(cca_joint_ct2076s_ccreg@meta.data$cluster) | !is.factor(cca_joint_ct2076s_ccreg@meta.data$cluster)) {
+  cca_joint_ct2076s_ccreg@meta.data$cluster <- cca_joint_ct2076s@meta.data[cca_joint_ct2076s_ccreg@cell.names, "cluster"]
+  saveRDS(cca_joint_ct2076s_ccreg, file = samples["cca_joint_ct2076s_ccreg", "data_path"])
+} else if (! identical(levels(cca_joint_ct2076s_ccreg@meta.data$cluster), levels(cca_joint_ct2076s@meta.data$cluster))) {
+  old <- levels(cca_joint_ct2076s_ccreg@meta.data$cluster); 
+  new <- levels(cca_joint_ct2076s@meta.data$cluster)
+  cca_joint_ct2076s_ccreg@meta.data$cluster <- mapvalues(cca_joint_ct2076s_ccreg@meta.data$cluster, old, new)
+  saveRDS(cca_joint_ct2076s_ccreg, file = samples["cca_joint_ct2076s_ccreg", "data_path"])
+}
+
+```
+
+## Entropy
+
+```{r cca_joint_mets_entropy, fig.width=8, fig.height=6}
+
+cca_joint_mets_entropy <- calc_entropy(cca_joint_ct2076s) %>% 
+  do.call(rbind, .) %>% as.data.frame() %>% 
+  add_column(sample = "cca_joint_mets", .before = 1)
+cca_joint_mets_ccreg_entropy <- calc_entropy(cca_joint_ct2076s_ccreg) %>% 
+  do.call(rbind, .) %>% as.data.frame() %>% 
+  add_column(sample = "cca_joint_mets_ccreg", .before = 1)
+
+entropy_all <- bind_rows(cca_joint_mets_entropy, cca_joint_mets_ccreg_entropy)
+
+ggplot(entropy_all, aes(x = cluster, y = entropy, fill = sample)) + 
+  geom_boxplot() + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+The entropy result doesn't look good, which makes sense though, as clusters are continuum, the cells on the boundary accounts for the dispersion between clusters.
+
+## Standard distance deviation
+
+https://rstudio-pubs-static.s3.amazonaws.com/202534_2c5edc19016247ac9ecfc5713b4604f2.html
+
+```{r cca_joint_mets_sdd, fig.width=8, fig.height=6}
+
+# compare radius or area
+cca_joint_mets_sdd <- calculate_sdd(cca_joint_ct2076s, out_dir = "outputs/19", prefix = "cca_joint_mets")
+cca_joint_mets_ccreg_sdd <- calculate_sdd(cca_joint_ct2076s_ccreg, out_dir = "outputs/19", prefix = "cca_joint_mets_ccreg")
+
+cca_joint_mets_sdd <- cca_joint_mets_sdd %>% as.data.frame() %>% 
+  add_column(sample = "cca_joint_mets_before_CCreg", .before = 1)
+cca_joint_mets_ccreg_sdd <- cca_joint_mets_ccreg_sdd %>% as.data.frame() %>% 
+  add_column(sample = "cca_joint_mets_after_CCreg", .before = 1)
+cca_joint_mets_sdd_both <- rbind(cca_joint_mets_sdd[, c("sample", "id", "SDD.radius", "SDD.area")], 
+                       cca_joint_mets_ccreg_sdd[, c("sample", "id", "SDD.radius", "SDD.area")])
+colnames(cca_joint_mets_sdd_both)[2] <- "cluster"
+cca_joint_mets_sdd_both$sample <- factor(cca_joint_mets_sdd_both$sample, levels = c("cca_joint_mets_before_CCreg", "cca_joint_mets_after_CCreg"))
+ggplot(cca_joint_mets_sdd_both, aes(x=cluster, y=SDD.radius, fill=sample)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Radius of SDD") + 
+  scale_fill_manual(values = usecol(pal_unikn_pref)[c(6, 7)]) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))  # or y=SDD.area if want to use area
+# ratio of the SDD.radius between cca_joint_mets_before_CCreg and cca_joint_mets_after_CCreg
+cca_joint_mets_sdd_ratio <- cca_joint_mets_ccreg_sdd[, c("SDD.radius", "SDD.area")]/cca_joint_mets_sdd[, c("SDD.radius", "SDD.area")]
+cca_joint_mets_sdd_ratio <- cca_joint_mets_sdd_ratio %>% 
+  add_column(cluster = cca_joint_mets_ccreg_sdd$id, .before = 1)
+colnames(cca_joint_mets_sdd_ratio)[2:3] <- c("SDD.radius.ratio", "SDD.area.ratio")
+
+ggplot(cca_joint_mets_sdd_ratio, aes(x=cluster, y=SDD.radius.ratio, fill=cluster)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Ratio of SDD radius (after vs. before)") + 
+  scale_fill_manual(values = cca_joint_mets_cols) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+## Geometric median absolute deviation (MAD)
+
+```{r cca_joint_mets_geomad, fig.width=8, fig.height=6}
+
+cca_joint_mets_geomad <- calculate_geo_mad(cca_joint_ct2076s) %>% as.data.frame() %>% 
+  add_column(sample = "cca_joint_mets_before_CCreg", .before = 1)
+cca_joint_mets_ccreg_geomad <- calculate_geo_mad(cca_joint_ct2076s_ccreg) %>% as.data.frame() %>% 
+  add_column(sample = "cca_joint_mets_after_CCreg", .before = 1)
+
+cca_joint_mets_geomad_both <- rbind(cca_joint_mets_geomad, cca_joint_mets_ccreg_geomad)
+cca_joint_mets_geomad_both$sample <- factor(cca_joint_mets_geomad_both$sample, levels = c("cca_joint_mets_before_CCreg", "cca_joint_mets_after_CCreg"))
+ggplot(cca_joint_mets_geomad_both, aes(x=cluster, y=geometric_mad, fill=sample)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Geometric MAD") + 
+  scale_fill_manual(values = usecol(pal_unikn_pref)[c(6, 7)]) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+# ratio of geometric MAD (median absolute deviation)
+cca_joint_mets_geomad_ratio <- cca_joint_mets_ccreg_geomad[, "geometric_mad"]/cca_joint_mets_geomad[, "geometric_mad"]
+cca_joint_mets_geomad_ratio <- cca_joint_mets_geomad_ratio %>% as.data.frame() %>% 
+  add_column(cluster = cca_joint_mets_ccreg_geomad$cluster, .before = 1)
+colnames(cca_joint_mets_geomad_ratio)[2] <- c("geo_mad_ratio")
+
+ggplot(cca_joint_mets_geomad_ratio, aes(x=cluster, y=geo_mad_ratio, fill=cluster)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Clusters") + ylab("Ratio of Geometric MAD (after vs. before)") + 
+  scale_fill_manual(values = cca_joint_mets_cols) + 
+  theme_min() + 
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+```
+
+# Session Info
+
+```{r ses_info}
+
+sessionInfo()
+
+```
